@@ -1,0 +1,92 @@
+# SFT data-mix experiments. Goal: find the open-source SFT mix that makes a
+# 135M model beat SmolLM2-135M-Instruct. Until our own base finishes
+# pretraining, SmolLM2-135M base stands in for it.
+#
+# Everything except the data mix (and its LR, chosen by sweep) is held fixed.
+
+model: HuggingFaceTB/SmolLM2-135M      # swap for our own base when it's ready
+
+# ---------------------------------------------------------------- data sources
+# split_by: one component per value of that column, named "<name>/<value>".
+# Run `python run.py --list` to see every component and its size.
+# Non-chat datasets: use prompt_field + response_field instead of messages.
+sources:
+  - name: smolsmol                      # what SmolLM2-135M-Instruct was SFT'd on
+    hf_id: HuggingFaceTB/smol-smoltalk
+    split_by: source
+  - name: tulu3
+    hf_id: allenai/tulu-3-sft-mixture
+    split_by: source
+
+# ---------------------------------------------------------------- mixes
+# {component glob: weight}. "natural" = the component's own token share.
+# An explicit weight is spread over the matched components by their size.
+control: control
+mixes:
+  control: {"smolsmol/*": natural}
+  tulu3: {"tulu3/*": natural}
+  half_half: {"smolsmol/*": 0.5, "tulu3/*": 0.5}
+
+# Generated experiments (each becomes its own mix):
+experiments:
+  leave_one_out: control                # control minus one component -> what does each part contribute?
+  add:                                  # control with `fraction` of tokens given to one candidate
+    base: control
+    fraction: 0.2
+    candidates: ["tulu3/*"]
+  alone: []                             # e.g. ["tulu3/*"]: each component on its own (narrow sets look bad here)
+
+# ---------------------------------------------------------------- formatting
+# Same chat template and default system prompt as SmolLM2-135M-Instruct.
+system_prompt: "You are a helpful AI assistant named SmolLM, trained by Hugging Face"
+seq_len: 8192                           # SmolLM2-135M context; longer examples are dropped (counted in report)
+
+# ---------------------------------------------------------------- training (identical for every mix)
+token_budget: 50_000_000                # total tokens per run (prompts included; loss only on assistant tokens)
+val_tokens: 1_000_000                   # held out from each mix, used only to pick the LR
+micro_batch_size: 2
+grad_accum: 4                           # 2 * 4 * 8192 = 65,536 tokens/step
+lr_grid: [3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3]
+lr_policy: per_mix                      # per_mix: every mix gets its own sweep (fairest)
+                                        # control: sweep the control only, reuse its LR (3x cheaper)
+warmup_frac: 0.03
+min_lr_ratio: 0.1
+weight_decay: 0.0
+grad_clip: 1.0
+data_seed: 1234                         # fixes which examples each mix draws
+sweep_seed: 0
+final_seeds: [0, 1]                     # best LR re-trained with each seed, then evaluated
+
+# ---------------------------------------------------------------- decontamination
+decontam:
+  enabled: true                         # drop SFT examples that contain most of an eval item
+  ngram: 13
+  min_overlap: 0.5                      # fraction of an eval item's 13-grams that must appear
+  tasks: [gsm8k, ifeval, arc_easy, arc_challenge, hellaswag, openbookqa, piqa, winogrande, mmlu]
+
+# ---------------------------------------------------------------- evaluation (lm-evaluation-harness)
+# chat: true -> prompted through the chat template (generative tasks).
+# Absolute numbers won't exactly match the SmolLM2 paper (it used lighteval);
+# every model here, including the target, is scored with the same harness.
+eval_groups:
+  instruction_following:
+    chat: true
+    tasks: {ifeval: "prompt_level_strict_acc,none"}
+  math:
+    chat: true
+    tasks: {gsm8k: "exact_match,flexible-extract"}
+  knowledge:                            # mostly set by pretraining; here to catch SFT damage
+    chat: false
+    tasks:
+      hellaswag: "acc_norm,none"
+      arc_easy: "acc_norm,none"
+      arc_challenge: "acc_norm,none"
+      piqa: "acc_norm,none"
+      winogrande: "acc,none"
+      openbookqa: "acc_norm,none"
+eval_batch_size: 64                     # fixed; "auto" probes slowly and ends up generating one request at a time
+
+target: SmolLM2-135M-Instruct
+references:
+  - {name: SmolLM2-135M (base), model: HuggingFaceTB/SmolLM2-135M, chat: false}
+  - {name: SmolLM2-135M-Instruct, model: HuggingFaceTB/SmolLM2-135M-Instruct, chat: true}

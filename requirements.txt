@@ -1,0 +1,10 @@
+# Top-level deps. setup.sh freezes the resolved versions into requirements.lock
+# on first install; commit that lock so every new instance gets identical versions.
+torch
+transformers
+datasets
+accelerate
+lm-eval[ifeval]
+pyyaml
+pandas
+numpy
