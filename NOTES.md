@@ -15,6 +15,16 @@ Update it at each milestone. Newest entries first.
 
 ## Log
 
+### 2026-10-26: plan to build a ~1M-sample SFT pool (see idea.md)
+
+- N (smol-smoltalk train) = 460,341 samples, confirmed on the HF card (Apache-2.0).
+  2N ≈ 920K, which fits the ~1M pool target. tulu-3-sft-mixture: 939,343 (ODC-BY).
+- Decided: the user supplies the list of HF datasets. Each dataset goes through
+  normalize → clean → decontam in its own parallel worker. No LLM judge for now.
+  Output is local parquet only (git-ignored), and copying it off the instance is manual.
+- Note: these steps are CPU work (120 cores, 354 GB RAM here). The GPUs only help
+  once model-based steps are added.
+
 ### 2026-10-26: new instance, environment set up
 
 - Instance: 4× NVIDIA RTX PRO 6000 Blackwell (96 GB each, sm_120), driver 580.178.04
