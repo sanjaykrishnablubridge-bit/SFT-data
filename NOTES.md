@@ -27,6 +27,23 @@ Update it at each milestone. Newest entries first.
 - Launched in tmux session `train`: `python run.py --mixes control,tulu3,half_half`
   with full settings (4-LR sweep, 2 seeds). Log: `runs/run.log`, report: `runs/report.md`.
   Question it answers: does swapping or adding tulu-3 beat smol-smoltalk (control)?
+- **Result** (finished ~12:50 UTC, ~70 min wall; full table in `runs/report.md`, not in git):
+
+  | | IFEval | GSM8K | knowledge avg | best LR |
+  |---|---|---|---|---|
+  | base | – | – | 0.476 | |
+  | SmolLM2-135M-Instruct (target, SFT+DPO) | 0.220 | 0.020 | 0.452 | |
+  | control (smol-smoltalk) | 0.176 | 0.018 | 0.449 | 1e-3 (grid edge) |
+  | tulu3 | 0.172 | 0.017 | 0.462 | 3e-4 |
+  | half_half | 0.164 | 0.022 | 0.468 | 3e-4 |
+
+  - IFEval and GSM8K: no significant difference between mixes. GSM8K is ~2% for every
+    model (floor), even with tulu-3's 50k GSM8K-style math, so it can't tell mixes apart.
+  - Knowledge: tulu3 and half_half lose less to SFT (HellaSwag +0.025 ▲ for both; ARC-Easy
+    +0.030 ▲ for half_half). **Confound:** control trained at LR 1e-3 vs 3e-4 for the
+    others, and a higher LR alone can cause more forgetting. Re-run control at 3e-4 before
+    crediting the data.
+  - Gap to target on IFEval (0.176 vs 0.220) is plausibly DPO.
 
 ### 2026-10-26: plan to build a ~1M-sample SFT pool (see idea.md)
 
