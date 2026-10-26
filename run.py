@@ -9,17 +9,25 @@
 Per mix: LR sweep (best LR by held-out val loss) -> final seeds at best LR ->
 lm-eval on each. runs/report.md compares every mix to the control and to the
 target model, with a noise threshold and a data/fairness audit.
+
+Multi-GPU: every training run and eval is a single-GPU job; independent jobs
+(references, mixes, LRs, seeds) run concurrently, one per GPU (--gpus 0,1,2,3;
+default: all visible). Each job's output goes to a .log file next to its results.
 """
 import argparse
 import fnmatch
 import json
 import math
+import os
+import queue
 import shutil
 import statistics
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import torch
 import yaml
 from transformers import AutoTokenizer
 
@@ -31,9 +39,31 @@ SMOKE = {
 }
 
 
-def sh(cmd):
-    print("+", " ".join(cmd), flush=True)
-    subprocess.run(cmd, check=True)
+GPUS = queue.Queue()  # free GPU ids; a job holds one for its whole duration
+
+
+def sh(cmd, log):
+    """Run cmd on a free GPU (blocks until one is free), output to log."""
+    gpu = GPUS.get()
+    try:
+        print(f"+ [gpu {gpu}] {' '.join(cmd)}  > {log}", flush=True)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a") as f:
+            r = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT,
+                               env=os.environ | {"CUDA_VISIBLE_DEVICES": str(gpu)})
+        if r.returncode:
+            raise RuntimeError(f"failed (exit {r.returncode}), see {log}")
+    finally:
+        GPUS.put(gpu)
+
+
+def pmap(fn, items):
+    """fn over items concurrently (GPU use is limited by sh); first error is raised."""
+    items = list(items)
+    if not items:
+        return []
+    with ThreadPoolExecutor(len(items)) as ex:
+        return list(ex.map(fn, items))
 
 
 # ---------------------------------------------------------------- training
@@ -46,7 +76,7 @@ def train(ctx, mix_name, fractions, lr, seed, save):
     (out / "mix.json").write_text(json.dumps(fractions, indent=2))
     sh([sys.executable, "train.py", "--config", ctx.args.config, "--mix", str(out / "mix.json"),
         "--lr", str(lr), "--seed", str(seed), "--out", str(out),
-        "--override", json.dumps(ctx.override)] + (["--save"] if save else []))
+        "--override", json.dumps(ctx.override)] + (["--save"] if save else []), out / "train.log")
     return out, json.loads((out / "metrics.json").read_text())
 
 
@@ -71,7 +101,7 @@ def evaluate(ctx, model_path, out, chat):
             cmd += ["--apply_chat_template", "--fewshot_as_multiturn"]
         if ctx.cfg.get("eval_limit"):
             cmd += ["--limit", str(ctx.cfg["eval_limit"])]
-        sh(cmd)
+        sh(cmd, res_dir.with_suffix(".log"))
         res = json.loads(max(res_dir.rglob("results_*.json"), key=lambda p: p.stat().st_mtime).read_text())
         for t, metric in tasks.items():
             r = res["results"][t]
@@ -87,20 +117,22 @@ def run_mix(ctx, name, fractions, fixed_lr):
     cfg = ctx.cfg
     sweep = {}
     if fixed_lr is None:
-        for lr in cfg["lr_grid"]:
-            sweep[lr] = train(ctx, name, fractions, lr, cfg["sweep_seed"], save=False)[1]
+        lrs = cfg["lr_grid"]
+        sweep = dict(zip(lrs, pmap(lambda lr: train(ctx, name, fractions, lr, cfg["sweep_seed"], save=False)[1], lrs)))
         best = min(sweep, key=lambda lr: sweep[lr]["val_loss"])
     else:
         best = fixed_lr
-    finals = []
-    for seed in cfg["final_seeds"]:
+
+    def final(seed):
         out, m = train(ctx, name, fractions, best, seed, save=True)
         s = None
         if not m["diverged"]:
             s = evaluate(ctx, out / "model", out, chat=True)
             if not ctx.args.keep_models and (out / "model").exists():
                 shutil.rmtree(out / "model")
-        finals.append((m, s))
+        return m, s
+
+    finals = pmap(final, cfg["final_seeds"])
     return {"fractions": fractions, "sweep": sweep, "best_lr": best, "finals": finals}
 
 
@@ -115,7 +147,10 @@ def main():
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--list", action="store_true", help="print components and mixes, then exit")
     ap.add_argument("--keep-models", action="store_true")
+    ap.add_argument("--gpus", default=None, help="comma-separated GPU ids to use (default: all visible)")
     args = ap.parse_args()
+    for g in (args.gpus.split(",") if args.gpus else range(torch.cuda.device_count())):
+        GPUS.put(g)
 
     ctx = Ctx()
     ctx.args = args
@@ -143,16 +178,21 @@ def main():
             print(f" {mark} {m}  ({len(mixes[m])} components)")
         return
 
-    refs = {}
-    for r in cfg["references"]:
-        refs[r["name"]] = evaluate(ctx, r["model"], ctx.root / "references" / data.safe_name(r["name"]), r["chat"])
-
-    results = {}
-    results[control] = run_mix(ctx, control, mixes[control], None)
-    fixed = results[control]["best_lr"] if cfg["lr_policy"] == "control" else None
-    for name in selected[1:]:
-        results[name] = run_mix(ctx, name, mixes[name], fixed)
-        write_report(ctx, cat, refs, results)  # refresh after every mix so partial results are usable
+    with ThreadPoolExecutor(len(cfg["references"]) + len(selected)) as ex:
+        ref_f = {r["name"]: ex.submit(evaluate, ctx, r["model"], ctx.root / "references" / data.safe_name(r["name"]),
+                                      r["chat"]) for r in cfg["references"]}
+        ctrl_f = ex.submit(run_mix, ctx, control, mixes[control], None)
+        fixed = None
+        if cfg["lr_policy"] == "control":  # the other mixes need the control's LR before they can start
+            fixed = ctrl_f.result()["best_lr"]
+        mix_f = {ex.submit(run_mix, ctx, name, mixes[name], fixed): name for name in selected[1:]}
+        refs = {n: f.result() for n, f in ref_f.items()}
+        done = {control: ctrl_f.result()}
+        for f in as_completed(mix_f):
+            done[mix_f[f]] = f.result()
+            # refresh after every mix so partial results are usable
+            write_report(ctx, cat, refs, {n: done[n] for n in selected if n in done})
+    results = {n: done[n] for n in selected}
     write_report(ctx, cat, refs, results)
     print((ctx.root / "report.md").read_text())
 

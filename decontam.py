@@ -16,7 +16,7 @@ from collections import Counter, defaultdict
 
 from datasets import load_dataset
 
-from data import CACHE, fingerprint
+from data import CACHE, file_lock, fingerprint
 
 # (hf_id, config, split, function(row) -> text). Kept in sync with eval tasks.
 EVAL_SETS = {
@@ -46,6 +46,10 @@ class Decontaminator:
     def __init__(self, tasks, n=13, min_overlap=0.5):
         self.n, self.min_overlap = n, min_overlap
         path = CACHE / f"evalgrams_{fingerprint([sorted(tasks), n, 2])}.pkl"
+        with file_lock(path):  # concurrent runs build the index once
+            self._load_or_build(tasks, n, path)
+
+    def _load_or_build(self, tasks, n, path):
         if path.exists():
             self.index, self.sizes, self.coverage = pickle.loads(path.read_bytes())
             return

@@ -8,12 +8,14 @@ A *mix* maps component globs to weights (a number, or "natural" = the
 component's own token share). Every mix is built to exactly the same token
 budget; components that run out are repeated and the repeat factor recorded.
 """
+import fcntl
 import fnmatch
 import hashlib
 import json
 import random
 import re
 from collections import defaultdict
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -198,6 +200,12 @@ def build(cfg, fractions, tok, decontam=None):
     key = fingerprint([fractions, cfg["model"], seq, cfg["token_budget"], cfg["val_tokens"], cfg["data_seed"],
                  cfg["system_prompt"], cfg["sources"], bool(decontam), cfg.get("decontam", {})])
     path = CACHE / "data" / f"{key}.npz"
+    with file_lock(path):  # concurrent runs of the same mix (LR sweep) build it once
+        return _build(cfg, fractions, tok, decontam, path)
+
+
+def _build(cfg, fractions, tok, decontam, path):
+    seq = cfg["seq_len"]
     if path.exists():
         z = np.load(path, allow_pickle=False)
         return {k: z[k] for k in ("train_ids", "train_mask", "val_ids", "val_mask")} | {
@@ -275,6 +283,15 @@ def _pack(examples, seq, n_blocks):
     ids = np.array(ids[:need], dtype=np.uint16).reshape(n_blocks, seq)
     mask = np.array(mask[:need], dtype=bool).reshape(n_blocks, seq)
     return ids, mask
+
+
+@contextmanager
+def file_lock(path):
+    """Exclusive lock on <path>.lock, held across processes for the with-block."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(f"{path}.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
 
 
 def fingerprint(obj):

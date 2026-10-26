@@ -15,6 +15,19 @@ Update it at each milestone. Newest entries first.
 
 ## Log
 
+### 2026-10-26: multi-GPU runs; first real experiment
+
+- `run.py` now runs independent jobs (reference evals, mixes, LR-sweep points, seeds)
+  concurrently, one job per GPU (`--gpus 0,1,2,3`; default is all visible). Each job's
+  output goes to `train.log` / `lm_eval*.log` next to its results. File locks in
+  `data.py` / `decontam.py` make concurrent jobs build each cache once.
+- The smoke test passed on 4 GPUs: sweep → final → save → chat and non-chat eval all worked.
+  Measured ~76k tok/s per GPU on Blackwell (vs ~40k on the RTX 6000 Ada), so a
+  50M-token run takes ~11 min.
+- Launched in tmux session `train`: `python run.py --mixes control,tulu3,half_half`
+  with full settings (4-LR sweep, 2 seeds). Log: `runs/run.log`, report: `runs/report.md`.
+  Question it answers: does swapping or adding tulu-3 beat smol-smoltalk (control)?
+
 ### 2026-10-26: plan to build a ~1M-sample SFT pool (see idea.md)
 
 - N (smol-smoltalk train) = 460,341 samples, confirmed on the HF card (Apache-2.0).
