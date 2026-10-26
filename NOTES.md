@@ -4,6 +4,19 @@ Running log of state and decisions, committed so it survives instance changes
 (GPU instances are throwaway; local Claude memory doesn't carry over).
 Update it at each milestone. Newest entries first.
 
+## Current status (2026-10-26)
+
+- **Done:** environment set up; `run.py` runs on all GPUs; first experiment
+  (control vs tulu3 vs half_half) finished. Results are in the log below.
+- **Not kept:** trained model weights. `run.py` deletes each model after eval unless
+  `--keep-models` is passed. To get one back, restore `runs/` and re-run that mix with
+  `--keep-models` (only its final training re-runs, ~11 min per seed).
+- **Copy off before the instance dies:** `runs/` (1.3 MB). Everything else rebuilds:
+  `cache/` (tokenized data, ~500 MB), `.venv/` (setup.sh), the HF cache, `runs_smoke/`.
+- **Waiting on the user:** the list of HF datasets for the ~1M-sample SFT pool, plus
+  answers on the cleaning rules (see "Open questions").
+- **Resume on a new instance:** clone → `bash setup.sh` → restore `runs/` → `source .venv/bin/activate`.
+
 ## Rules of thumb
 
 - `runs/` is the results and is git-ignored. Copy it off before an instance dies;
@@ -83,12 +96,23 @@ Update it at each milestone. Newest entries first.
   SmolLM2-135M and SmolLM2-135M-Instruct are prefetched. No `HF_TOKEN` set (both
   datasets are public; a token is needed only to push to the Hub).
 - Checked: torch sees all 4 GPUs and runs bf16 on Blackwell.
-- Nothing has been run yet: no `--list`, `--smoke` or experiments.
-- Training is single-GPU (`train.py` uses `.cuda()`, i.e. GPU 0), so 3 GPUs sit idle.
-  Option: run separate mixes in parallel with `CUDA_VISIBLE_DEVICES=N`. First check
-  that concurrent runs don't collide in `runs/`.
+- Training was single-GPU (`train.py` uses `.cuda()`); fixed later the same day by
+  scheduling jobs across GPUs in `run.py` (see above).
+
+## Open questions (data pool)
+
+- Dataset list: the user will provide it.
+- Cleaning rules: length cap (8192 vs tighter, e.g. 2048), English only?, keep multi-turn
+  and system prompts?, drop boilerplate refusals?
+- Dedup: exact + MinHash within each dataset, then one global cross-dataset pass. OK?
+- Decontam: also add MT-Bench and BBH to `decontam.py`'s eval sets?
+- Output: one parquet folder per dataset under `data/`, schema `{messages, source, id}`,
+  plus a per-dataset drop report. Any extra columns (bucket label, original id)?
 
 ## Next
 
-1. `python run.py --list`, then `python run.py --smoke`.
-2. `python run.py --mixes control` (see the README's suggested order).
+1. Re-run the control at LR 3e-4 to remove the LR confound in the knowledge result
+   (2 runs, ~25 min on 4 GPUs).
+2. Build the SFT pool once the dataset list arrives (CPU workers, no GPU needed).
+3. README order: `loo:*` (which smol-smoltalk parts matter), then `add:*` candidates.
+4. Later: DPO stage. The IFEval gap to the target (0.176 vs 0.220) is plausibly DPO.
