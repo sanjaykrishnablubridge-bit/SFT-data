@@ -22,6 +22,25 @@ Update it at each milestone. Newest entries first.
 - Decided: the user supplies the list of HF datasets. Each dataset goes through
   normalize → clean → decontam in its own parallel worker. No LLM judge for now.
   Output is local parquet only (git-ignored), and copying it off the instance is manual.
+- ~1M is the size **after** cleaning. Mixture ratios are set later, using SmolTalk
+  (Table 9, 1.1M, built for the 1.7B model) or smol-smoltalk as the reference.
+- smol-smoltalk's actual composition, counted from the HF train split:
+
+  | source | samples | share |
+  |---|---|---|
+  | smol-magpie-ultra-short | 270,838 | 58.8% |
+  | self-oss-instruct | 48,071 | 10.4% |
+  | openhermes-50k | 47,492 | 10.3% |
+  | smol-contraints | 34,433 | 7.5% |
+  | smollm-rewrite-30k | 26,657 | 5.8% |
+  | smol-summarize-20k | 19,272 | 4.2% |
+  | smol-summarize-5k | 4,749 | 1.0% |
+  | longalign | 3,560 | 0.8% |
+  | explore-instruct-rewrite | 3,017 | 0.7% |
+  | everyday-conversations | 2,252 | 0.5% |
+
+  It has **no math** (no NuminaMath or MetaMathQA), no function calling and no SystemChats.
+  So the GSM8K bucket has no smol-smoltalk reference ratio; take it from SmolTalk instead.
 - Note: these steps are CPU work (120 cores, 354 GB RAM here). The GPUs only help
   once model-based steps are added.
 
